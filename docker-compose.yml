@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  server:
+    build: .
+    volumes:
+      - .:/app:cached
+    ports:
+      - "9000:9000"
+      - "8765:8765"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - USE_REDIS=1
+    depends_on:
+      - redis
+
+volumes:
+  redis-data:

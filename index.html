@@ -12,10 +12,40 @@
       font-family: 'Courier New', monospace;
       height: 100vh;
       overflow: hidden;
-      display: flex;
-      flex-direction: column;
+      /* контейнер теперь управляет расположением */
       padding: 1rem;
       line-height: 1.4;
+    }
+    #app-container {
+      display: flex;
+      height: 100%;
+    }
+    #sidebar {
+      width: 220px;
+      padding: 1rem;
+      border-right: 1px solid #0f0;
+      overflow-y: auto;
+    }
+    #sidebar h2 {
+      margin-bottom: 0.5rem;
+      font-size: 1.1rem;
+      color: #0ff;
+    }
+    #chat-list {
+      list-style: none;
+    }
+    #chat-list li {
+      padding: 0.3rem 0.2rem;
+      cursor: pointer;
+      border-radius: 2px;
+    }
+    #chat-list li:hover {
+      background: rgba(0, 255, 0, 0.1);
+    }
+    #chat-list li.active {
+      background: #0f0;
+      color: #000;
+      font-weight: bold;
     }
     #terminal {
       flex: 1;
@@ -103,19 +133,26 @@
   </style>
 </head>
 <body>
-  <div id="terminal">
-    <div id="header">
-      <span>ZEPHYR TERMINAL v0.1</span>
-      <span id="status" class="blink">[DISCONNECTED]</span>
+  <div id="app-container">
+    <!-- боковая панель со списком чатов -->
+    <div id="sidebar">
+      <h2>Мои чаты</h2>
+      <ul id="chat-list"></ul>
     </div>
-    <div id="output">
-      [SYSTEM] Zephyr Messenger initialized
-      [SYSTEM] Type /help for available commands
-      [SYSTEM] Connecting to server...
-    </div>
-    <div id="input-area">
-      <span id="prompt">user@zephyr:~$ </span>
-      <input type="text" id="command-input" placeholder="Enter command..." autofocus>
+    <div id="terminal">
+      <div id="header">
+        <span>ZEPHYR TERMINAL v0.1</span>
+        <span id="status" class="blink">[DISCONNECTED]</span>
+      </div>
+      <div id="output">
+        [SYSTEM] Zephyr Messenger initialized
+        [SYSTEM] Type /help for available commands
+        [SYSTEM] Connecting to server...
+      </div>
+      <div id="input-area">
+        <span id="prompt">user@zephyr:~$ </span>
+        <input type="text" id="command-input" placeholder="Enter command..." autofocus>
+      </div>
     </div>
   </div>
 
@@ -132,6 +169,32 @@
     let userId = 'user_' + Math.random().toString(36).slice(2, 8);
     let chatHistory = {}; // chatId -> {type,name,messages}
     let socket = null;
+
+    // ===== UI helpers =====
+    function updateChatList() {
+      const list = document.getElementById('chat-list');
+      list.innerHTML = '';
+      Object.entries(chatHistory).forEach(([id, chat]) => {
+        const li = document.createElement('li');
+        li.textContent = `${chat.type === 'private' ? '🔒' : chat.type === 'group' ? '👥' : '📢'} ${chat.name} [${id}]`;
+        if (currentChat == id) li.classList.add('active');
+        li.addEventListener('click', () => {
+          currentChat = parseInt(id);
+          updatePrompt();
+          updateChatList();
+          displayHistory(currentChat);
+        });
+        list.appendChild(li);
+      });
+    }
+
+    function displayHistory(chatId) {
+      output.innerHTML = '';
+      const history = chatHistory[chatId]?.messages || [];
+      history.forEach(msg => {
+        appendLine(`[${msg.time}] ${msg.user === 'sys' ? '[SYSTEM]' : msg.user}: ${msg.text}`);
+      });
+    }
 
     function connectToServer() {
       if (socket && socket.readyState === WebSocket.OPEN) return;
@@ -281,6 +344,8 @@
           chatHistory[chatId] = { type, name, messages: [] };
           currentChat = chatId;
           updatePrompt();
+          updateChatList();
+          displayHistory(currentChat);
           const typeLabel = { private: '🔒 PRIVATE', group: '👥 GROUP', channel: '📢 CHANNEL' }[type];
           appendLine(`[SYSTEM] Created ${typeLabel} chat "${name}" (ID: ${chatId})`, 'system');
           appendLine(`[SYSTEM] Switched to chat ${chatId}`, 'system');
@@ -302,6 +367,7 @@
           }
           currentChat = chatId;
           updatePrompt();
+          updateChatList();
           // notify server
           sendToServer({ action: 'join', chat_id: chatId, user: userId });
           // Show chat history
@@ -323,6 +389,8 @@
             const active = currentChat == id ? ' ← ACTIVE' : '';
             appendLine(`  ${typeIcon} [${id}] ${chat.name}${active}`, 'system');
           });
+          // синхронизируем боковую панель
+          updateChatList();
           return;
         }
       }

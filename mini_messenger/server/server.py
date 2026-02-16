@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import struct
 import websockets
 from .storage import InMemoryStorage
@@ -9,13 +10,25 @@ from mini_messenger.protocol.types import PacketFlag, MessageType, ChatType
 from mini_messenger.crypto.keys import KeyManager
 from mini_messenger.crypto.e2ee import E2EE
 
+# попытка импортировать кеш, если он доступен
+try:
+    from .cache import RedisCache
+except ImportError:
+    RedisCache = None
+
+
 class MiniServer:
     def __init__(self, host='0.0.0.0', port=9000, ws_port=8765):
         self.host = host
         self.port = port
         self.ws_port = ws_port
         self.storage = InMemoryStorage()
-        self.chat_mgr = ChatManager(self.storage)
+        # при наличии переменной окружения USE_REDIS или REDIS_URL используем кеш
+        self.cache = None
+        if RedisCache and (os.getenv('USE_REDIS') or os.getenv('REDIS_URL')):
+            self.cache = RedisCache(os.getenv('REDIS_URL'))
+
+        self.chat_mgr = ChatManager(self.storage, cache=self.cache)
         self.tcp_connections = {}  # writer: user_id
         self.ws_connections = {}   # websocket: user_id
     
@@ -51,13 +64,16 @@ class MiniServer:
                     )
                     payload = E2EE.decrypt(payload, shared_secret)
                 
-                # Сохраняем сообщение
+                # Сохраняем сообщение в хранилище и (опционально) в кэше
                 if chat_id in self.storage.chats:
-                    self.storage.chats[chat_id]['messages'].append({
+                    msg = {
                         'from': user_id,
                         'data': payload,
                         'encrypted': bool(flags & PacketFlag.ENCRYPTED)
-                    })
+                    }
+                    self.storage.chats[chat_id]['messages'].append(msg)
+                    if self.cache:
+                        self.cache.add_message(chat_id, msg)
                 
                 # Рассылка участникам чата
                 await self._broadcast(chat_id, header + payload, exclude=writer)
@@ -67,8 +83,9 @@ class MiniServer:
             self._cleanup(writer)
     
     async def _broadcast(self, chat_id: int, data: bytes, exclude=None):
+        members = self.cache.get_members(chat_id) if self.cache else self.storage.chats[chat_id]['members']
         for writer, uid in self.tcp_connections.items():
-            if writer != exclude and uid in self.storage.chats[chat_id]['members']:
+            if writer != exclude and uid in members:
                 try:
                     writer.write(data)
                     await writer.drain()
@@ -76,8 +93,9 @@ class MiniServer:
 
     async def _broadcast_ws(self, chat_id: int, from_user: str, text: str):
         msg = json.dumps({'chat_id': chat_id, 'from': from_user, 'text': text})
+        members = self.cache.get_members(chat_id) if self.cache else self.storage.chats.get(chat_id, {}).get('members', {})
         for ws, uid in list(self.ws_connections.items()):
-            if uid != from_user and uid in self.storage.chats.get(chat_id, {}).get('members', {}):
+            if uid != from_user and uid in members:
                 try:
                     await ws.send(msg)
                 except:
@@ -115,10 +133,14 @@ class MiniServer:
                                 'admin': user_id if chat_type == ChatType.CHANNEL else None,
                                 'messages': []
                             }
+                            if self.cache:
+                                self.cache.store_chat(chat_id, self.storage.chats[chat_id])
                     elif action == 'join':
                         chat_id = data.get('chat_id')
                         if chat_id in self.storage.chats:
                             self.storage.chats[chat_id]['members'].add(user_id)
+                            if self.cache:
+                                self.cache.add_member(chat_id, user_id)
                     continue
                 
                 # normal message
@@ -135,11 +157,16 @@ class MiniServer:
                         'admin': None,
                         'messages': []
                     }
-                self.storage.chats[chat_id]['messages'].append({
+                    if self.cache:
+                        self.cache.store_chat(chat_id, self.storage.chats[chat_id])
+                msg = {
                     'from': user_id,
                     'data': text.encode('utf-8'),
                     'encrypted': False
-                })
+                }
+                self.storage.chats[chat_id]['messages'].append(msg)
+                if self.cache:
+                    self.cache.add_message(chat_id, msg)
                 await self._broadcast_ws(chat_id, user_id, text)
         except Exception as e:
             print(f"[WS-] {user_id} disconnect: {e}")
