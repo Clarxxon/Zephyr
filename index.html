@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zephyr Terminal</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #000;
+      color: #0f0;
+      font-family: 'Courier New', monospace;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      padding: 1rem;
+      line-height: 1.4;
+    }
+    #terminal {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      max-width: 900px;
+      margin: 0 auto;
+      width: 100%;
+      border: 1px solid #0f0;
+      border-radius: 4px;
+      box-shadow: 0 0 15px #0f0, inset 0 0 10px #0f0;
+      overflow: hidden;
+    }
+    #header {
+      padding: 0.5rem 1rem;
+      border-bottom: 1px solid #0a0;
+      font-weight: bold;
+      display: flex;
+      justify-content: space-between;
+      background: rgba(0, 30, 0, 0.7);
+    }
+    #output {
+      flex: 1;
+      padding: 1rem;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.95em;
+      background: rgba(0, 15, 0, 0.3);
+    }
+    #input-area {
+      display: flex;
+      padding: 0.75rem 1rem;
+      border-top: 1px solid #0a0;
+      background: rgba(0, 25, 0, 0.5);
+    }
+    #prompt {
+      flex-shrink: 0;
+      margin-right: 0.5rem;
+      user-select: none;
+    }
+    #command-input {
+      background: transparent;
+      border: none;
+      color: #0f0;
+      font-family: inherit;
+      font-size: 1em;
+      flex: 1;
+      outline: none;
+      caret-color: #0f0;
+    }
+    #command-input::placeholder {
+      color: #0a0;
+      opacity: 0.7;
+    }
+    .system { color: #6f6; font-style: italic; }
+    .error { color: #f66; }
+    .timestamp { color: #666; }
+    .user-you { color: #0ff; font-weight: bold; }
+    .chat-tag { color: #ff0; }
+    .blink {
+      animation: blink 1s infinite;
+      color: #f00;
+    }
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
+    ::-webkit-scrollbar {
+      width: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #000;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #0a0;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #0f0;
+    }
+    @media (max-width: 600px) {
+      body { padding: 0.5rem; }
+      #terminal { margin: 0; border-radius: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div id="terminal">
+    <div id="header">
+      <span>ZEPHYR TERMINAL v0.1</span>
+      <span id="status" class="blink">[DISCONNECTED]</span>
+    </div>
+    <div id="output">
+      [SYSTEM] Zephyr Messenger initialized
+      [SYSTEM] Type /help for available commands
+      [SYSTEM] Connecting to server...
+    </div>
+    <div id="input-area">
+      <span id="prompt">user@zephyr:~$ </span>
+      <input type="text" id="command-input" placeholder="Enter command..." autofocus>
+    </div>
+  </div>
+
+  <script>
+    // DOM Elements
+    const output = document.getElementById('output');
+    const input = document.getElementById('command-input');
+    const status = document.getElementById('status');
+    const promptEl = document.getElementById('prompt');
+
+    // State
+    let currentChat = null;
+    let isConnected = false;
+    let userId = 'user_' + Math.random().toString(36).slice(2, 8);
+    let chatHistory = {}; // chatId: [messages]
+
+    // Fake WebSocket for demo (replace with real ws://your-server in production)
+    const ws = {
+      send: (msg) => {
+        if (!isConnected) {
+          appendLine('[ERROR] Not connected to server. Type /connect', 'error');
+          return;
+        }
+        simulateServerResponse(msg);
+      },
+      close: () => { isConnected = false; updateStatus(); }
+    };
+
+    // Initialize
+    updatePrompt();
+    setupEventListeners();
+
+    // ===== CORE FUNCTIONS =====
+    function appendLine(text, className = '') {
+      const line = document.createElement('div');
+      line.className = className;
+      line.textContent = text;
+      output.appendChild(line);
+      output.scrollTop = output.scrollHeight;
+      
+      // Auto-clear old messages (keep last 100)
+      if (output.children.length > 100) {
+        output.removeChild(output.firstChild);
+      }
+    }
+
+    function getTimestamp() {
+      return new Date().toLocaleTimeString('en-US', { 
+        hour: '2-digit', 
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false 
+      });
+    }
+
+    function updateStatus() {
+      status.textContent = isConnected ? '[ONLINE]' : '[DISCONNECTED]';
+      status.className = isConnected ? '' : 'blink';
+    }
+
+    function updatePrompt() {
+      promptEl.textContent = currentChat 
+        ? `user@zephyr:~[chat:${currentChat}]$ ` 
+        : 'user@zephyr:~$ ';
+    }
+
+    function setupEventListeners() {
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && input.value.trim()) {
+          const command = input.value.trim();
+          appendLine(`${promptEl.textContent}${command}`);
+          processCommand(command);
+          input.value = '';
+        }
+      });
+
+      input.addEventListener('focus', () => {
+        // Restore prompt if chat changed externally
+        updatePrompt();
+      });
+
+      // Auto-focus on click anywhere in terminal
+      document.getElementById('terminal').addEventListener('click', () => {
+        input.focus();
+      });
+
+      // Simulate connection after 1.5s for demo
+      setTimeout(() => {
+        isConnected = true;
+        updateStatus();
+        appendLine('[SYSTEM] Connected to Zephyr network', 'system');
+        appendLine('[SYSTEM] Create chat: /chat new private "Alice"', 'system');
+        appendLine('[SYSTEM] Join group: /chat join 7890', 'system');
+      }, 1500);
+    }
+
+    // ===== COMMAND PROCESSOR =====
+    function processCommand(cmd) {
+      const args = cmd.split(' ');
+      const mainCmd = args[0].toLowerCase();
+
+      // Help
+      if (mainCmd === '/help') {
+        appendLine('Available commands:', 'system');
+        appendLine('  /connect          - Connect to server', 'system');
+        appendLine('  /chat new <type> "<name>" - Create chat (private/group/channel)', 'system');
+        appendLine('  /chat join <id>   - Join existing chat', 'system');
+        appendLine('  /chat list        - List your chats', 'system');
+        appendLine('  /msg <text>       - Send message to current chat', 'system');
+        appendLine('  /clear            - Clear terminal', 'system');
+        appendLine('  /status           - Show connection status', 'system');
+        appendLine('  /help             - Show this help', 'system');
+        return;
+      }
+
+      // Connection
+      if (mainCmd === '/connect') {
+        if (isConnected) {
+          appendLine('[SYSTEM] Already connected', 'system');
+        } else {
+          isConnected = true;
+          updateStatus();
+          appendLine('[SYSTEM] Connection established', 'system');
+        }
+        return;
+      }
+
+      // Chat management
+      if (mainCmd === '/chat') {
+        if (args[1] === 'new' && args[2] && args[3]) {
+          const type = args[2].toLowerCase();
+          const name = cmd.split('"')[1] || 'Unnamed';
+          
+          if (!['private', 'group', 'channel'].includes(type)) {
+            appendLine('[ERROR] Invalid chat type. Use: private, group, channel', 'error');
+            return;
+          }
+          
+          const chatId = Math.floor(1000 + Math.random() * 9000);
+          chatHistory[chatId] = { type, name, messages: [] };
+          currentChat = chatId;
+          updatePrompt();
+          
+          const typeLabel = { private: '🔒 PRIVATE', group: '👥 GROUP', channel: '📢 CHANNEL' }[type];
+          appendLine(`[SYSTEM] Created ${typeLabel} chat "${name}" (ID: ${chatId})`, 'system');
+          appendLine(`[SYSTEM] Switched to chat ${chatId}`, 'system');
+          return;
+        }
+        
+        if (args[1] === 'join' && args[2]) {
+          const chatId = parseInt(args[2]);
+          if (!chatHistory[chatId]) {
+            // Simulate joining existing chat
+            chatHistory[chatId] = { 
+              type: 'group', 
+              name: `Chat_${chatId}`, 
+              messages: [
+                { time: '10:05:22', user: 'sys', text: `Welcome to the chat!` }
+              ] 
+            };
+          }
+          currentChat = chatId;
+          updatePrompt();
+          
+          // Show chat history
+          appendLine(`\n[SYSTEM] Joined chat ${chatId} - "${chatHistory[chatId].name}"`, 'system');
+          chatHistory[chatId].messages.forEach(msg => {
+            appendLine(`[${msg.time}] ${msg.user === 'sys' ? '[SYSTEM]' : msg.user}: ${msg.text}`);
+          });
+          return;
+        }
+        
+        if (args[1] === 'list') {
+          if (Object.keys(chatHistory).length === 0) {
+            appendLine('[SYSTEM] No chats. Create one with /chat new', 'system');
+            return;
+          }
+          appendLine('[SYSTEM] Your chats:', 'system');
+          Object.entries(chatHistory).forEach(([id, chat]) => {
+            const typeIcon = { private: '🔒', group: '👥', channel: '📢' }[chat.type] || '💬';
+            const active = currentChat == id ? ' ← ACTIVE' : '';
+            appendLine(`  ${typeIcon} [${id}] ${chat.name}${active}`, 'system');
+          });
+          return;
+        }
+      }
+
+      // Send message
+      if (mainCmd === '/msg' && args.length > 1) {
+        if (!currentChat) {
+          appendLine('[ERROR] No chat selected. Use /chat join <id> or /chat new', 'error');
+          return;
+        }
+        const text = cmd.slice(5).trim();
+        sendMessage(text);
+        return;
+      }
+
+      // Clear terminal
+      if (mainCmd === '/clear') {
+        output.innerHTML = '';
+        appendLine('[SYSTEM] Terminal cleared', 'system');
+        return;
+      }
+
+      // Status
+      if (mainCmd === '/status') {
+        appendLine(`[STATUS] Connection: ${isConnected ? 'ONLINE' : 'OFFLINE'}`, 'system');
+        appendLine(`[STATUS] Current chat: ${currentChat || 'none'}`, 'system');
+        appendLine(`[STATUS] User ID: ${userId}`, 'system');
+        return;
+      }
+
+      // Direct message (if in chat)
+      if (currentChat && !cmd.startsWith('/')) {
+        sendMessage(cmd);
+        return;
+      }
+
+      // Unknown command
+      appendLine(`[ERROR] Unknown command "${mainCmd}". Type /help`, 'error');
+    }
+
+    function sendMessage(text) {
+      if (!isConnected) {
+        appendLine('[ERROR] Not connected to server', 'error');
+        return;
+      }
+      
+      const time = getTimestamp();
+      const chatTag = `[${chatHistory[currentChat].type.toUpperCase()}]`;
+      
+      // Show locally immediately
+      appendLine(`[${time}] ${chatTag} <span class="user-you">You</span>: ${text}`);
+      
+      // Save to history
+      chatHistory[currentChat].messages.push({
+        time,
+        user: 'You',
+        text
+      });
+      
+      // Simulate server echo (in real app: wait for server confirmation)
+      setTimeout(() => {
+        if (chatHistory[currentChat].type === 'private') {
+          simulateReply(`[${time}] ${chatTag} <Alice>: Message received (E2EE)`);
+        } else if (chatHistory[currentChat].type === 'channel') {
+          simulateReply(`[${time}] ${chatTag} [SYSTEM]: Message published to 142 subscribers`);
+        }
+      }, 300);
+    }
+
+    // ===== SIMULATION (replace with real WS handlers) =====
+    function simulateReply(text) {
+      if (!currentChat) return;
+      appendLine(text);
+    }
+
+    function simulateServerResponse(rawMsg) {
+      // In real app: parse WebSocket message and call appendLine
+      // This is just for demo aesthetics
+      if (rawMsg.includes('"type":"system"')) {
+        setTimeout(() => {
+          appendLine('[SYSTEM] Key exchange completed (E2EE active)', 'system');
+        }, 400);
+      }
+    }
+
+    // Easter egg: Konami code
+    let konami = [];
+    const konamiCode = ['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','b','a'];
+    document.addEventListener('keydown', (e) => {
+      konami.push(e.key);
+      if (konami.length > konamiCode.length) konami.shift();
+      if (konami.join(',').includes(konamiCode.join(','))) {
+        appendLine('[SYSTEM] Zephyr protocol optimized: -15% latency', 'system');
+        document.body.style.boxShadow = '0 0 30px #0f0, 0 0 60px #00f';
+        setTimeout(() => { document.body.style.boxShadow = ''; }, 2000);
+      }
+    });
+  </script>
+</body>
+</html>
