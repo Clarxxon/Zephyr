@@ -1,5 +1,5 @@
 from .storage import InMemoryStorage
-from protocol.types import ChatType
+from mini_messenger.protocol.types import ChatType
 
 class ChatManager:
     def __init__(self, storage: InMemoryStorage):

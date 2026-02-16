@@ -1,7 +1,7 @@
 import struct
-from crypto.keys import KeyManager
-from crypto.e2ee import E2EE
-from protocol.types import ChatType
+from mini_messenger.crypto.keys import KeyManager
+from mini_messenger.crypto.e2ee import E2EE
+from mini_messenger.protocol.types import ChatType
 
 class Session:
     def __init__(self):

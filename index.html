@@ -130,23 +130,56 @@
     let currentChat = null;
     let isConnected = false;
     let userId = 'user_' + Math.random().toString(36).slice(2, 8);
-    let chatHistory = {}; // chatId: [messages]
+    let chatHistory = {}; // chatId -> {type,name,messages}
+    let socket = null;
 
-    // Fake WebSocket for demo (replace with real ws://your-server in production)
-    const ws = {
-      send: (msg) => {
-        if (!isConnected) {
-          appendLine('[ERROR] Not connected to server. Type /connect', 'error');
-          return;
-        }
-        simulateServerResponse(msg);
-      },
-      close: () => { isConnected = false; updateStatus(); }
-    };
+    function connectToServer() {
+      if (socket && socket.readyState === WebSocket.OPEN) return;
+      socket = new WebSocket('ws://localhost:8765');
+      socket.onopen = () => {
+        isConnected = true;
+        updateStatus();
+        appendLine('[SYSTEM] Connected to server','system');
+      };
+      socket.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.chat_id != null && msg.from && msg.text) {
+            const time = getTimestamp();
+            const chatTag = chatHistory[msg.chat_id]
+              ? `[${chatHistory[msg.chat_id].type.toUpperCase()}]`
+              : `[CHAT:${msg.chat_id}]`;
+            appendLine(`[${time}] ${chatTag} <${msg.from}>: ${msg.text}`);
+            if (!chatHistory[msg.chat_id]) {
+              chatHistory[msg.chat_id] = { type:'group', name:`Chat_${msg.chat_id}`, messages:[] };
+            }
+            chatHistory[msg.chat_id].messages.push({time, user: msg.from, text: msg.text});
+          }
+        } catch (err) { console.error('invalid message', err); }
+      };
+      socket.onclose = () => {
+        isConnected = false;
+        updateStatus();
+        appendLine('[SYSTEM] Disconnected from server','system');
+      };
+      socket.onerror = (e) => {
+        appendLine('[ERROR] WebSocket error','error');
+      };
+    }
+
+    function sendToServer(obj) {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(obj));
+      } else {
+        appendLine('[ERROR] No active connection','error');
+      }
+    }
 
     // Initialize
     updatePrompt();
     setupEventListeners();
+    // try to connect automatically
+    connectToServer();
 
     // ===== CORE FUNCTIONS =====
     function appendLine(text, className = '') {
@@ -202,14 +235,6 @@
         input.focus();
       });
 
-      // Simulate connection after 1.5s for demo
-      setTimeout(() => {
-        isConnected = true;
-        updateStatus();
-        appendLine('[SYSTEM] Connected to Zephyr network', 'system');
-        appendLine('[SYSTEM] Create chat: /chat new private "Alice"', 'system');
-        appendLine('[SYSTEM] Join group: /chat join 7890', 'system');
-      }, 1500);
     }
 
     // ===== COMMAND PROCESSOR =====
@@ -236,9 +261,7 @@
         if (isConnected) {
           appendLine('[SYSTEM] Already connected', 'system');
         } else {
-          isConnected = true;
-          updateStatus();
-          appendLine('[SYSTEM] Connection established', 'system');
+          connectToServer();
         }
         return;
       }
@@ -258,17 +281,17 @@
           chatHistory[chatId] = { type, name, messages: [] };
           currentChat = chatId;
           updatePrompt();
-          
           const typeLabel = { private: '🔒 PRIVATE', group: '👥 GROUP', channel: '📢 CHANNEL' }[type];
           appendLine(`[SYSTEM] Created ${typeLabel} chat "${name}" (ID: ${chatId})`, 'system');
           appendLine(`[SYSTEM] Switched to chat ${chatId}`, 'system');
+          // notify server
+          sendToServer({ action: 'create', chat_id: chatId, type, name, user: userId });
           return;
         }
         
         if (args[1] === 'join' && args[2]) {
           const chatId = parseInt(args[2]);
           if (!chatHistory[chatId]) {
-            // Simulate joining existing chat
             chatHistory[chatId] = { 
               type: 'group', 
               name: `Chat_${chatId}`, 
@@ -279,7 +302,8 @@
           }
           currentChat = chatId;
           updatePrompt();
-          
+          // notify server
+          sendToServer({ action: 'join', chat_id: chatId, user: userId });
           // Show chat history
           appendLine(`\n[SYSTEM] Joined chat ${chatId} - "${chatHistory[chatId].name}"`, 'system');
           chatHistory[chatId].messages.forEach(msg => {
@@ -344,45 +368,18 @@
         appendLine('[ERROR] Not connected to server', 'error');
         return;
       }
-      
       const time = getTimestamp();
       const chatTag = `[${chatHistory[currentChat].type.toUpperCase()}]`;
-      
-      // Show locally immediately
       appendLine(`[${time}] ${chatTag} <span class="user-you">You</span>: ${text}`);
-      
-      // Save to history
       chatHistory[currentChat].messages.push({
         time,
         user: 'You',
         text
       });
-      
-      // Simulate server echo (in real app: wait for server confirmation)
-      setTimeout(() => {
-        if (chatHistory[currentChat].type === 'private') {
-          simulateReply(`[${time}] ${chatTag} <Alice>: Message received (E2EE)`);
-        } else if (chatHistory[currentChat].type === 'channel') {
-          simulateReply(`[${time}] ${chatTag} [SYSTEM]: Message published to 142 subscribers`);
-        }
-      }, 300);
+      // send to server
+      sendToServer({ chat_id: currentChat, text, user: userId });
     }
 
-    // ===== SIMULATION (replace with real WS handlers) =====
-    function simulateReply(text) {
-      if (!currentChat) return;
-      appendLine(text);
-    }
-
-    function simulateServerResponse(rawMsg) {
-      // In real app: parse WebSocket message and call appendLine
-      // This is just for demo aesthetics
-      if (rawMsg.includes('"type":"system"')) {
-        setTimeout(() => {
-          appendLine('[SYSTEM] Key exchange completed (E2EE active)', 'system');
-        }, 400);
-      }
-    }
 
     // Easter egg: Konami code
     let konami = [];

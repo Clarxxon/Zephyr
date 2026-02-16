@@ -3,5 +3,6 @@ from mini_messenger.server.server import MiniServer
 
 if __name__ == "__main__":
     server = MiniServer()
-    print("🚀 Сервер запущен. Поддержка: личные чаты (E2EE), группы, каналы")
+    print(f"🚀 Сервер запущен. TCP:{server.host}:{server.port}, WS:{server.host}:{server.ws_port}")
+    print("   Поддержка: личные чаты (E2EE), группы, каналы")
     asyncio.run(server.start())

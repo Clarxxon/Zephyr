@@ -1,18 +1,23 @@
 import asyncio
+import json
+import struct
+import websockets
 from .storage import InMemoryStorage
 from .chat_manager import ChatManager
-from protocol.packet import Packet
-from protocol.types import PacketFlag, MessageType, ChatType
-from crypto.keys import KeyManager
-from crypto.e2ee import E2EE
+from mini_messenger.protocol.packet import Packet
+from mini_messenger.protocol.types import PacketFlag, MessageType, ChatType
+from mini_messenger.crypto.keys import KeyManager
+from mini_messenger.crypto.e2ee import E2EE
 
 class MiniServer:
-    def __init__(self, host='0.0.0.0', port=9000):
+    def __init__(self, host='0.0.0.0', port=9000, ws_port=8765):
         self.host = host
         self.port = port
+        self.ws_port = ws_port
         self.storage = InMemoryStorage()
         self.chat_mgr = ChatManager(self.storage)
-        self.connections = {}  # writer: user_id
+        self.tcp_connections = {}  # writer: user_id
+        self.ws_connections = {}   # websocket: user_id
     
     async def handle_client(self, reader, writer):
         user_id = f"user_{id(writer) % 10000}"
@@ -62,15 +67,91 @@ class MiniServer:
             self._cleanup(writer)
     
     async def _broadcast(self, chat_id: int, data: bytes, exclude=None):
-        for writer, uid in self.connections.items():
+        for writer, uid in self.tcp_connections.items():
             if writer != exclude and uid in self.storage.chats[chat_id]['members']:
                 try:
                     writer.write(data)
                     await writer.drain()
                 except: pass
+
+    async def _broadcast_ws(self, chat_id: int, from_user: str, text: str):
+        msg = json.dumps({'chat_id': chat_id, 'from': from_user, 'text': text})
+        for ws, uid in list(self.ws_connections.items()):
+            if uid != from_user and uid in self.storage.chats.get(chat_id, {}).get('members', {}):
+                try:
+                    await ws.send(msg)
+                except:
+                    pass
     
     def _cleanup(self, writer):
-        if writer in self.connections:
-            uid = self.connections.pop(writer)
+        if writer in self.tcp_connections:
+            uid = self.tcp_connections.pop(writer)
             del self.storage.users[writer]
             writer.close()
+
+    async def websocket_handler(self, websocket):
+        user_id = f"ws_{id(websocket) % 10000}"
+        self.ws_connections[websocket] = user_id
+        self.storage.users[websocket] = {'user_id': user_id}
+        print(f"[WS+] {user_id} connected")
+        try:
+            async for message in websocket:
+                try:
+                    data = json.loads(message)
+                except:
+                    continue
+                # administrative actions
+                if 'action' in data:
+                    action = data['action']
+                    if action == 'create':
+                        chat_id = data.get('chat_id')
+                        chat_type = data.get('type', ChatType.GROUP)
+                        name = data.get('name')
+                        if chat_id is not None:
+                            self.storage.chats[chat_id] = {
+                                'type': chat_type,
+                                'name': name or f"Chat_{chat_id}",
+                                'members': {user_id},
+                                'admin': user_id if chat_type == ChatType.CHANNEL else None,
+                                'messages': []
+                            }
+                    elif action == 'join':
+                        chat_id = data.get('chat_id')
+                        if chat_id in self.storage.chats:
+                            self.storage.chats[chat_id]['members'].add(user_id)
+                    continue
+                
+                # normal message
+                chat_id = data.get('chat_id')
+                text = data.get('text')
+                if chat_id is None or text is None:
+                    continue
+                # create chat on the fly if not exist
+                if chat_id not in self.storage.chats:
+                    self.storage.chats[chat_id] = {
+                        'type': ChatType.GROUP,
+                        'name': f"Chat_{chat_id}",
+                        'members': {user_id},
+                        'admin': None,
+                        'messages': []
+                    }
+                self.storage.chats[chat_id]['messages'].append({
+                    'from': user_id,
+                    'data': text.encode('utf-8'),
+                    'encrypted': False
+                })
+                await self._broadcast_ws(chat_id, user_id, text)
+        except Exception as e:
+            print(f"[WS-] {user_id} disconnect: {e}")
+        finally:
+            self.ws_connections.pop(websocket, None)
+            self.storage.users.pop(websocket, None)
+            print(f"[WS-] {user_id} disconnected")
+
+    async def start(self):
+        # run both TCP and WS servers concurrently
+        tcp_server = await asyncio.start_server(self.handle_client, self.host, self.port)
+        ws_server = await websockets.serve(self.websocket_handler, self.host, self.ws_port)
+        print(f"TCP server on {self.host}:{self.port}, WS on {self.host}:{self.ws_port}")
+        async with tcp_server:
+            await asyncio.gather(tcp_server.serve_forever(), ws_server.wait_closed())

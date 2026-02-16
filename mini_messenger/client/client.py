@@ -1,9 +1,9 @@
 import asyncio
 import struct
-from protocol.packet import Packet
-from protocol.types import PacketFlag, MessageType, ChatType
+from mini_messenger.protocol.packet import Packet
+from mini_messenger.protocol.types import PacketFlag, MessageType, ChatType
 from .session import Session
-from crypto.e2ee import E2EE
+from mini_messenger.crypto.e2ee import E2EE
 
 class MiniClient:
     def __init__(self, host='127.0.0.1', port=9000):
